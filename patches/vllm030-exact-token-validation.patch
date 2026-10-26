@@ -1,0 +1,45 @@
+diff --git a/vllm/entrypoints/scale_out/token_in_token_out/protocol.py b/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
+--- a/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
++++ b/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
+@@ -185,6 +185,9 @@ class GenerateRequest(BaseModel):
+             raise ValueError("content_parts and features are mutually exclusive")
+         return self
+ 
++    expected_token_ids: list[int] | None = None
++    """AReaL extension: the fully rendered prompt token IDs to assert."""
++
+     @model_validator(mode="after")
+     def _require_ec_for_metadata_only(self) -> "GenerateRequest":
+         features = self.features
+diff --git a/vllm/entrypoints/scale_out/token_in_token_out/serving.py b/vllm/entrypoints/scale_out/token_in_token_out/serving.py
+--- a/vllm/entrypoints/scale_out/token_in_token_out/serving.py
++++ b/vllm/entrypoints/scale_out/token_in_token_out/serving.py
+@@ -245,6 +245,28 @@ class ServingTokens(GenerateBaseServing):
+             else await self._get_trace_headers(raw_request.headers)
+         )
+ 
++        if request.expected_token_ids is not None:
++            actual_prompt_ids = engine_input.get("prompt_token_ids")
++            if actual_prompt_ids is None:
++                return self.create_error_response(
++                    "[areal-exact-token] Cannot verify expected_token_ids: "
++                    "rendered prompt has no prompt_token_ids."
++                )
++            expected = request.expected_token_ids
++            actual = list(actual_prompt_ids)
++            if actual != expected:
++                shorter = min(len(expected), len(actual))
++                divergence = next(
++                    (i for i in range(shorter) if expected[i] != actual[i]),
++                    shorter,
++                )
++                return self.create_error_response(
++                    "[areal-exact-token] Rendered prompt does not match "
++                    f"expected_token_ids: expected_len={len(expected)} "
++                    f"actual_len={len(actual)} "
++                    f"first_divergence={divergence}."
++                )
++
+         # Extract data_parallel_rank from header (router can inject it)
+         data_parallel_rank = self._get_data_parallel_rank(raw_request)
+         session_id = self._get_session_id_from_headers(raw_request)

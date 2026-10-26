@@ -15,68 +15,109 @@
 # This file is a part of the AReaL project.
 #
 
-FROM quay.io/ascend/cann:9.1.0-a3-ubuntu22.04-py3.12
+# AReaL + vLLM-Ascend 0.30, built from the standard CANN 9.2 image.
+# Build context: the arealite-npu repository, including its patches/ directory.
+# This Dockerfile has no local-image build stage.
+# Keep CANN 9.2, but prefer vLLM-Ascend 0.30.0rc2 package requirements over
+# the upstream A3 image's newer snapshot/daily dependencies.
+ARG CANN_QUAY_URL=swr.cn-north-12.myhuaweicloud.com/atlas_inference/cann
+ARG CANN_IMAGE_VERSION=9.2.0_20260930220649
+FROM ${CANN_QUAY_URL}:${CANN_IMAGE_VERSION}-a3-ubuntu22.04-py3.12
 
-ARG CANN_VERSION=9.1.0
+ARG CANN_VERSION=9.2.0
+ARG SOC_VERSION=ascend910_9391
+ARG VLLM_COMMIT=ced6857afa0ea7b2e3f0846a62e1394e90f15607
+ARG VLLM_ASCEND_COMMIT=8fde6d4e335fe300e2b949aab0e31659cce0811d
+# Legacy build args keep the costly pre-dependency layers cache-compatible.
+# They are intentionally unused: this variant does not install daily wheels.
+ARG MEMFABRIC_VERSION=1.3.0
+ARG MEMFABRIC_DATE=20261009.10
+ARG MEMCACHE_VERSION=1.3.0
+ARG MEMCACHE_DATE=20261009.15
+ARG TORCH_NPU_VERSION=26.2.0
+ARG TORCH_NPU_DATE=20260926.5
+ARG TRITON_ASCEND_VERSION=20260923230212
+ARG TRITON_ASCEND_PACKAGE_VERSION=3.6.0%2Bdev20260923230212
+ARG DAILY_DEPS_MODE=full
+ARG FLA_NPU_VERSION=26.9.1+deva4a7958
+ARG FLA_NPU_RELEASE_TAG=v26.9.1-beta2
 ARG MEGATRON_BRANCH=core_r0.18.0
 ARG MEGATRON_COMMIT=dc0ee41ada177d4c74ba46bb501bba5967264815
 ARG MINDSPEED_BRANCH=core_r0.18.0
-ARG MINDSPEED_COMMIT=24565708bc9809d80f53e43621115122e93abeea
+ARG MINDSPEED_COMMIT=1135d097c6e4a3533bf4d22904b92bd904b11507
 ARG MEGATRON_ADAPTOR_BRANCH=core_r0.18.0
-ARG MEGATRON_ADAPTOR_COMMIT=45efe78fed838bc9d11347c82155710a365d8eec
+ARG MEGATRON_ADAPTOR_COMMIT=9b21a5cff57952210cff331f10ed2d3d5e3b7922
 ARG TRANSFORMER_ENGINE_NPU_BRANCH=main
-ARG TRANSFORMER_ENGINE_NPU_COMMIT=fd09a928c1e2c74fa13f08dd96a9d7c68cabb48f
+ARG TRANSFORMER_ENGINE_NPU_COMMIT=59d1a96c8fefe9265f278b95bbf4136a0639e7bc
 ARG MEGATRON_BRIDGE_TAG=v0.5.1
 ARG MEGATRON_BRIDGE_COMMIT=5cb3444c43f7499cf3872b2d46870cf8bc2e00ce
-ARG VLLM_TAG=v0.26.0
-ARG VLLM_ASCEND_BRANCH=releases/v0.26.0rc
-ARG VLLM_ASCEND_COMMIT=fb2820b9b6598f888d7dc56260c03d3352cc08e9
+ARG FLA_REF=v0.5.2
 ARG ASCEND_INSTALL_PATH=/usr/local/Ascend
-ARG SOC_VERSION=ascend910_9391
 
-# System build deps (the clean CANN base ships none) + pip/uv bootstrap.
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends \
-        gcc g++ cmake libnuma-dev wget git curl jq vim tmux build-essential gawk clang-15 && \
+      gcc g++ cmake libnuma-dev libibverbs-dev libjemalloc2 libhiredis-dev \
+      protobuf-compiler libprotobuf-dev wget git curl jq vim tmux build-essential gawk clang-15 && \
     update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 20 && \
     update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-15 20 && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    python3 -m pip install -U pip "setuptools>=80,<81" uv && \
-    python3 -m pip cache purge
+    python3 -m pip install -U pip 'setuptools>=80,<81' uv && \
+    python3 -m pip install mooncake-transfer-engine-npu==0.3.11.post1 \
+      'modelscope<1.38' 'protobuf>3.20.0'
 
-# Exact-token generation transport for the pinned vLLM release; see
-# patches/README.md for provenance and deletion conditions.
-COPY patches/vllm-content-parts.patch \
-     patches/vllm-exact-token-validation.patch /areal-workspace/patches/
-
-# Install vLLM + vllm-ascend. The latter pins torch 2.10.0,
-# torch-npu 2.10.0.post4, and triton-ascend 3.2.2.
-# Patches are applied after the editable install, never before: a dirty tree changes
-# setuptools-scm's recorded version and can select incompatible vllm-ascend paths.
-# The recorded version is asserted so any regression fails during the build.
-RUN export PIP_EXTRA_INDEX_URL="https://mirrors.huaweicloud.com/ascend/repos/pypi https://download.pytorch.org/whl/cpu https://triton-ascend.osinfra.cn/pypi/simple/" && \
-    export PIP_TRUSTED_HOST="mirrors.huaweicloud.com triton-ascend.osinfra.cn download.pytorch.org download-r2.pytorch.org" && \
+# Build the inference stack from source, as in the earlier 0.26 recipe.
+RUN export PIP_EXTRA_INDEX_URL='https://mirrors.huaweicloud.com/ascend/repos/pypi https://download.pytorch.org/whl/cpu https://triton-ascend.osinfra.cn/pypi/simple/' && \
+    export PIP_TRUSTED_HOST='mirrors.huaweicloud.com triton-ascend.osinfra.cn download.pytorch.org download-r2.pytorch.org' && \
     export SOC_VERSION=${SOC_VERSION} && \
     export LD_LIBRARY_PATH=${ASCEND_INSTALL_PATH}/cann-${CANN_VERSION}/aarch64-linux/devlib/linux/aarch64:$LD_LIBRARY_PATH && \
     . ${ASCEND_INSTALL_PATH}/ascend-toolkit/set_env.sh && \
     . ${ASCEND_INSTALL_PATH}/nnal/atb/set_env.sh && \
-    git clone --depth 1 --branch ${VLLM_TAG} https://github.com/vllm-project/vllm.git /areal-workspace/vllm && \
-    git clone --branch ${VLLM_ASCEND_BRANCH} https://github.com/vllm-project/vllm-ascend.git /areal-workspace/vllm-ascend && \
+    git clone https://github.com/vllm-project/vllm.git /areal-workspace/vllm && \
+    git -C /areal-workspace/vllm checkout ${VLLM_COMMIT} && \
+    git clone https://github.com/vllm-project/vllm-ascend.git /areal-workspace/vllm-ascend && \
     git -C /areal-workspace/vllm-ascend checkout ${VLLM_ASCEND_COMMIT} && \
     cd /areal-workspace/vllm && \
-    VLLM_TARGET_DEVICE=empty pip install -v -e . && \
-    git apply -v /areal-workspace/patches/vllm-content-parts.patch && \
-    git apply -v /areal-workspace/patches/vllm-exact-token-validation.patch && \
-    python3 -c "import sys, os; sys.path.insert(0, 'vllm'); import _version; want = os.environ['VLLM_TAG'].removeprefix('v'); assert _version.__version__ == want, f'vllm reports {_version.__version__}, expected {want}'" && \
-    pip uninstall -y triton && \
+    VLLM_TARGET_DEVICE=empty python3 -m pip install -v -e '.[audio]' && \
+    python3 -m pip uninstall -y triton && \
     cd /areal-workspace/vllm-ascend && \
-    pip install -r requirements.txt && \
-    COMPILE_CUSTOM_KERNELS=1 pip install --no-build-isolation --no-deps -v -e . && \
-    python3 -c "from importlib.metadata import version; from packaging.version import Version; expected = {'torch': '2.10.0', 'torch-npu': '2.10.0.post4', 'triton-ascend': '3.2.2'}; actual = {name: Version(version(name)).public for name in expected}; assert actual == expected, (actual, expected)" && \
-    python3 -m pip cache purge
+    VLLM_BATCH_INVARIANT=1 COMPILE_CUSTOM_KERNELS=1 python3 -m pip install -v -e . && \
+    python3 -m pip uninstall -y triton triton-ascend && \
+    python3 -m pip install triton-ascend==3.2.2 && \
+    python3 -m pip install concurrent-log-handler
 
-# Install the MCore 0.18 NPU stack in its required MA -> TENPU -> MindSpeed order.
-# Expose only megatron/ on PYTHONPATH to avoid examples package collisions.
+# Do not run install_daily_deps.sh: it overwrites vLLM-Ascend's declared
+# torch-npu, Triton-Ascend, memcache-hybrid, and memfabric-hybrid versions.
+RUN python3 -c "from importlib.metadata import version; assert version('vllm').startswith('0.30.0'); assert version('vllm-ascend').startswith('0.30.0rc2'); assert version('torch-npu') == '2.10.0.post4'; assert version('triton-ascend') == '3.2.2'; assert version('memcache-hybrid') == '1.2.0'; assert version('memfabric-hybrid') == '1.2.0'"
+
+# Match the AscendC FLA wheel shipped in the tested 0.30 A3 image. It is
+# separate from the Python/Triton FLA package used by Megatron training.
+RUN ARCH=$(uname -m); \
+    case "$ARCH" in \
+      aarch64) FLA_SHA256=6a6f298a23fbc4902e8379a469696bca1cce108db8159d9c5bf6dfe819a22d58 ;; \
+      x86_64) FLA_SHA256=da53bc5cd19fc7968c38c3b2684910012243ee9c1ae20cbc86a9667626614ff9 ;; \
+      *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;; \
+    esac && \
+    FLA_WHL="flash_linear_attention_npu_a3-${FLA_NPU_VERSION}-py3-none-manylinux_2_34_${ARCH}.whl" && \
+    wget --no-check-certificate -q "https://github.com/flashserve/flash-linear-attention-npu/releases/download/${FLA_NPU_RELEASE_TAG}/${FLA_WHL}" -O "/tmp/${FLA_WHL}" && \
+    echo "${FLA_SHA256}  /tmp/${FLA_WHL}" | sha256sum --check && \
+    python3 -m pip install --force-reinstall --no-deps "/tmp/${FLA_WHL}" && \
+    rm -f "/tmp/${FLA_WHL}"
+
+# The official 0.30 image also builds vLLM's Rust tool parser.
+# Use only its Rust 1.95 toolchain/cache, not its installed vLLM packages.
+# The final image remains based on the standard CANN image above.
+COPY --from=quay.io/ascend/vllm-ascend:v0.30.0rc2-a3 /root/.cargo /root/.cargo
+COPY --from=quay.io/ascend/vllm-ascend:v0.30.0rc2-a3 /root/.rustup /root/.rustup
+ENV PATH=/root/.cargo/bin:$PATH
+RUN cd /areal-workspace/vllm && \
+    export PROTOC_INCLUDE=/usr/include && \
+    python3 -m pip install setuptools-rust && \
+    ./build_rust.sh
+
+# Reuse the 0.26-era clone layer; advance its source trees below.
+# Optional for builds behind an intercepting corporate proxy without its CA.
+# Omit this build argument when the proxy CA is correctly installed.
+ARG GIT_SSL_NO_VERIFY
 RUN git clone --branch ${MEGATRON_BRANCH} https://github.com/NVIDIA/Megatron-LM.git /areal-workspace/Megatron-LM && \
     git -C /areal-workspace/Megatron-LM checkout ${MEGATRON_COMMIT} && \
     mkdir -p /areal-workspace/megatron-python && \
@@ -89,48 +130,115 @@ RUN git clone --branch ${MEGATRON_BRANCH} https://github.com/NVIDIA/Megatron-LM.
     python3 -m pip install --no-build-isolation --no-deps -e /areal-workspace/TransformerEngineNPU && \
     git clone --branch ${MINDSPEED_BRANCH} https://gitcode.com/Ascend/MindSpeed.git /areal-workspace/MindSpeed && \
     git -C /areal-workspace/MindSpeed checkout ${MINDSPEED_COMMIT} && \
-    python3 -m pip install -e /areal-workspace/MindSpeed --no-deps && \
-    python3 -m pip cache purge
+    python3 -m pip install -e /areal-workspace/MindSpeed --no-deps
 
-# Supply dependencies skipped by source-only/--no-deps training installs:
-# qwen-vl-utils/modelopt for Bridge, nvdlfw-inspect for TENPU, tzdata for MindSpeed.
-# Restore vLLM 0.26's FastAPI/Starlette requirements after vllm-ascend downgrades them;
-# OpenAI >=2.44 is the validated SDK baseline for its Responses API imports.
-# Keep this separate so dependency adjustments reuse the backend build layers.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    UV_HTTP_TIMEOUT=300 uv pip install --system \
-        qwen-vl-utils nvidia-modelopt nvdlfw-inspect tzdata \
-        'fastapi>=0.133.0,<0.137' 'starlette>=1.0.1' 'openai>=2.44.0'
+# Install the same AReaL dependency groups as the earlier recipe. The manifest
+# declares awex and the remaining application dependencies but intentionally
+# leaves torch and the inference backends to this Dockerfile.
+COPY pyproject.npu.toml /tmp/areal-deps/pyproject.toml
+COPY constraints.v030.official-deps.txt /tmp/areal-deps/constraints.txt
+# AReaL's rollout proxy imports LiteLLM adapters, not the optional LiteLLM
+# proxy server. The [proxy] extra requires FastAPI versions excluded by
+# vLLM-Ascend 0.30, so install LiteLLM core in this combined environment.
+RUN sed -i 's/litellm\[proxy\]/litellm/' /tmp/areal-deps/pyproject.toml
+RUN cd /tmp/areal-deps && \
+    UV_HTTP_TIMEOUT=300 uv pip install --system -r pyproject.toml --group dev -c constraints.txt && \
+    UV_HTTP_TIMEOUT=300 uv pip install --system -c constraints.txt \
+      gradio-client==2.6.1 gpytorch pytest-mock scikit-learn
 
-# Install only AReaL application dependencies from the manifest.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=pyproject.npu.toml,target=pyproject.toml \
-    UV_HTTP_TIMEOUT=300 uv pip install -r pyproject.toml --system --group dev
+# Explicitly pin the additions used by the tested 0.30 training image.
+RUN python3 -m pip install --disable-pip-version-check \
+      --no-deps \
+      mbridge==0.15.1 ray==2.58.0 nvidia-modelopt==0.46.1 \
+      qwen-vl-utils==0.0.14 nvdlfw-inspect==0.2.2 tzdata==2026.3 \
+      pulp==3.3.2 'openai>=2.44.0'
 
-# Install Megatron-Bridge
+# Re-assert the inference stack after AReaL's broader dependency install.
+RUN python3 -m pip install --disable-pip-version-check \
+      --constraint /tmp/areal-deps/constraints.txt \
+      --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi \
+      'torch-npu==2.10.0.post4' 'triton-ascend==3.2.2' \
+      'memcache-hybrid==1.2.0' 'memfabric-hybrid==1.2.0' \
+      'fastapi>=0.115,<0.124' 'mcp>=2,<3'
+
+# The public FLA wheel lacked Megatron's GDN modules in the snapshot build.
+# Install the complete source tree after the manifest's public wheel.
+RUN git clone https://github.com/fla-org/flash-linear-attention.git /areal-workspace/flash-linear-attention && \
+    git -C /areal-workspace/flash-linear-attention checkout ${FLA_REF} && \
+    python3 -m pip install --no-build-isolation --no-deps -e /areal-workspace/flash-linear-attention && \
+    python3 -c "from importlib.metadata import distribution; import json; u=json.loads(distribution('flash-linear-attention').read_text('direct_url.json')); assert u['url']=='file:///areal-workspace/flash-linear-attention' and u['dir_info']['editable']"
+
 COPY patches/megatron-bridge.v0.5.1-vision-dp-cp.patch /areal-workspace/patches/
 RUN git clone --branch ${MEGATRON_BRIDGE_TAG} https://github.com/NVIDIA-NeMo/Megatron-Bridge.git /areal-workspace/Megatron-Bridge && \
     git -C /areal-workspace/Megatron-Bridge checkout ${MEGATRON_BRIDGE_COMMIT} && \
-    git -C /areal-workspace/Megatron-Bridge apply -v /areal-workspace/patches/megatron-bridge.v0.5.1-vision-dp-cp.patch && \
-    python3 -m pip cache purge
+    git -C /areal-workspace/Megatron-Bridge apply /areal-workspace/patches/megatron-bridge.v0.5.1-vision-dp-cp.patch
 
-# Copy AReaL source code
 COPY . /AReaL
-RUN cp /AReaL/pyproject.npu.toml /AReaL/pyproject.toml && \
-    uv pip install --no-deps -e /AReaL --system && \
-    python3 -c "import importlib.metadata as m, tomllib; expected = tomllib.load(open('/AReaL/pyproject.toml', 'rb'))['project']['version']; actual = m.version('areal'); assert actual == expected, f'areal reports {actual}, expected {expected}'"
+RUN sed -i 's/litellm\[proxy\]/litellm/' /AReaL/pyproject.npu.toml && \
+    cp /AReaL/pyproject.npu.toml /AReaL/pyproject.toml && \
+    git -C /usr/local/python3.12.13/lib/python3.12/site-packages apply /AReaL/patches/awex-vllm030-protocol.patch && \
+    python3 -m pip install --disable-pip-version-check --no-deps -e /AReaL
 
-ENV PYTHONPATH=/areal-workspace/MegatronAdaptor:/areal-workspace/TransformerEngineNPU:/areal-workspace/MindSpeed:/areal-workspace/megatron-python:/areal-workspace/Megatron-Bridge/src:$PYTHONPATH
-
-# Validate dependency metadata and module paths without importing NPU backends.
-RUN python3 -c "from importlib.metadata import version; from packaging.version import Version; expected = {'torch': '2.10.0', 'torch-npu': '2.10.0.post4', 'triton-ascend': '3.2.2', 'transformers': '5.14.1'}; actual = {name: Version(version(name)).public for name in expected}; assert actual == expected, (actual, expected)" && \
-    python3 -c "import tomllib; from importlib.metadata import version; from packaging.requirements import Requirement; deps = tomllib.load(open('/AReaL/pyproject.toml', 'rb'))['project']['dependencies']; requirements = [Requirement(dep) for dep in deps]; mismatches = [(r.name, version(r.name), str(r.specifier)) for r in requirements if (r.marker is None or r.marker.evaluate()) and r.specifier and not r.specifier.contains(version(r.name))]; assert not mismatches, mismatches" && \
-    python3 -c "from importlib.metadata import version; from packaging.requirements import Requirement; requirements = [Requirement(dep) for dep in ('fastapi>=0.133.0,<0.137', 'starlette>=1.0.1', 'openai>=2.44.0')]; mismatches = [(r.name, version(r.name), str(r.specifier)) for r in requirements if not r.specifier.contains(version(r.name))]; assert not mismatches, mismatches" && \
-    python3 -c "from importlib.util import find_spec; modules = ('megatron_adaptor', 'transformer_engine', 'mindspeed', 'mbridge', 'megatron.core', 'megatron.training', 'megatron.bridge'); missing = [name for name in modules if find_spec(name) is None]; assert not missing, missing" && \
-    python3 -c "from importlib.util import find_spec; spec = find_spec('examples.vlm.geometry3k_grpo'); assert spec is not None and spec.origin == '/AReaL/examples/vlm/geometry3k_grpo.py', spec"
-
+ENV PYTHONPATH=/AReaL:/areal-workspace/MegatronAdaptor:/areal-workspace/TransformerEngineNPU:/areal-workspace/MindSpeed:/areal-workspace/megatron-python:/areal-workspace/Megatron-Bridge/src:$PYTHONPATH
 ENV HCCL_IF_BASE_PORT=63000 \
-    HCCL_NPU_SOCKET_PORT_RANGE="62100-62350"
-
-ENV TASK_QUEUE_ENABLE=1 \
+    HCCL_NPU_SOCKET_PORT_RANGE=62100-62350 \
+    TASK_QUEUE_ENABLE=1 \
     OMP_NUM_THREADS=1
+
+RUN test -d /usr/local/Ascend/cann-9.2.0 && \
+    python3 -c "from importlib.metadata import version; assert version('vllm').startswith('0.30.0'); assert version('vllm-ascend').startswith('0.30.0rc2'); assert version('torch-npu') == '2.10.0.post4'; assert version('triton-ascend') == '3.2.2'; assert version('memcache-hybrid') == '1.2.0'; assert version('memfabric-hybrid') == '1.2.0'; assert version('numpy') == '1.26.4'; assert version('pyarrow') == '25.0.1'; assert version('flash-linear-attention-npu-a3') == '26.9.1+deva4a7958'; assert version('awex') == '0.7.0'" && \
+    python3 -c "from importlib.util import find_spec; names=('areal', 'megatron', 'mbridge', 'awex', 'fla'); missing=[name for name in names if find_spec(name) is None]; assert not missing, missing"
+
+WORKDIR /AReaL
+
+# Advance the training stack after the verified inference and application
+# layers. This keeps the prior build cache reusable while testing the upgrade.
+# Re-pin these commits when intentionally updating the 26.2 release branches.
+ARG MEGATRON_262_COMMIT=571370c829ca768fe37244f4e2e7f28d8accc4ab
+ARG MINDSPEED_262_COMMIT=2eba32b26ce302808a38ad6feffcfde09e706c34
+ARG MEGATRON_ADAPTOR_262_COMMIT=dcfea728cee1393c656c25f63492b23ce1d4b464
+ARG TRANSFORMER_ENGINE_NPU_262_COMMIT=ce39648f52c8b44dbcc720b8a51a73fc639d01db
+RUN git -C /areal-workspace/Megatron-LM checkout ${MEGATRON_262_COMMIT} && \
+    git -C /areal-workspace/MegatronAdaptor checkout ${MEGATRON_ADAPTOR_262_COMMIT} && \
+    python3 -m pip install --no-build-isolation --no-deps -e /areal-workspace/MegatronAdaptor && \
+    git -C /areal-workspace/TransformerEngineNPU checkout ${TRANSFORMER_ENGINE_NPU_262_COMMIT} && \
+    python3 -m pip install --no-build-isolation --no-deps -e /areal-workspace/TransformerEngineNPU && \
+    git -C /areal-workspace/MindSpeed checkout ${MINDSPEED_262_COMMIT} && \
+    python3 -m pip install --no-build-isolation --no-deps -e /areal-workspace/MindSpeed && \
+    python3 -c "from importlib.util import find_spec; assert all(find_spec(x) for x in ('mindspeed', 'megatron_adaptor', 'transformer_engine'))"
+
+# Default Megatron gradient-accumulation fusion on NPU uses MindSpeed-Ops.
+# Build its AscendC kernels for the A3 SOC, keeping this step separate so
+# failures are distinguishable from the core training-stack upgrade.
+ARG MINDSPEED_OPS_COMMIT=4f410fc730c9463d87a8a1397d67005d0a71d309
+RUN export SOC_VERSION=${SOC_VERSION} && \
+    . ${ASCEND_INSTALL_PATH}/ascend-toolkit/set_env.sh && \
+    git clone --branch 26.2.0 https://gitcode.com/Ascend/MindSpeed-Ops.git /areal-workspace/MindSpeed-Ops && \
+    git -C /areal-workspace/MindSpeed-Ops checkout ${MINDSPEED_OPS_COMMIT} && \
+    python3 -m pip install --no-build-isolation --no-deps -e /areal-workspace/MindSpeed-Ops && \
+    python3 -c "from importlib.util import find_spec; assert find_spec('mindspeed_ops')"
+
+# Replace the inference stack's beta2 FLA-NPU wheel with the newer A3 build.
+# On this A3 host its packed TND SolveTri passed the single-op and Qwen3.6-27B
+# forward tests, so MindSpeed's AscendC path remains unpatched.
+ARG FLA_NPU_UPGRADE_VERSION=26.9.1+dev1cf47d6
+ARG FLA_NPU_UPGRADE_BASE_URL=https://github.com/flashserve/flash-linear-attention-npu/releases/download/v26.9.1-20261019-020004
+ARG FLA_NPU_UPGRADE_SHA256_AARCH64=59ef2dcd4ba0640074cb1d0d8cdee20e073392af45380f251222667423f2dd49
+RUN test "$(uname -m)" = "aarch64" && \
+    WHEEL="flash_linear_attention_npu_a3-${FLA_NPU_UPGRADE_VERSION}-py3-none-manylinux_2_34_aarch64.whl" && \
+    wget --no-check-certificate -q "${FLA_NPU_UPGRADE_BASE_URL}/${WHEEL}" -O "/tmp/${WHEEL}" && \
+    echo "${FLA_NPU_UPGRADE_SHA256_AARCH64}  /tmp/${WHEEL}" | sha256sum --check && \
+    python3 -m pip install --force-reinstall --no-deps "/tmp/${WHEEL}" && \
+    python3 -c "from importlib.metadata import version; assert version('flash-linear-attention-npu-a3') == '${FLA_NPU_UPGRADE_VERSION}'" && \
+    rm -f "/tmp/${WHEEL}"
+
+# AReaL records the exact expanded prompt used for training. Reject a rollout
+# when vLLM's rendered prompt differs, rather than silently training on a
+# different token sequence. This is the v0.30 port of the 0.26 local patch.
+RUN git -C /areal-workspace/vllm apply --check \
+      /AReaL/patches/vllm030-exact-token-validation.patch && \
+    git -C /areal-workspace/vllm apply \
+      /AReaL/patches/vllm030-exact-token-validation.patch && \
+    python3 -m py_compile \
+      /areal-workspace/vllm/vllm/entrypoints/scale_out/token_in_token_out/protocol.py \
+      /areal-workspace/vllm/vllm/entrypoints/scale_out/token_in_token_out/serving.py

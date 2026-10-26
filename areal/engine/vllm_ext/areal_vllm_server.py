@@ -10,12 +10,10 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from vllm.entrypoints.openai.api_server import build_app as _original_build_app
 from vllm.entrypoints.openai.api_server import run_server
-from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.completion.api_router import (
     create_completion as _decorated_create_completion,
 )
 from vllm.entrypoints.openai.completion.protocol import CompletionRequest
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse, OpenAIBaseModel
 from vllm.entrypoints.scale_out.token_in_token_out.api_router import (
     generate as _decorated_generate,
 )
@@ -29,6 +27,22 @@ from vllm.entrypoints.serve.utils.api_utils import (
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.utils.argparse_utils import FlexibleArgumentParser
+
+try:
+    from vllm.entrypoints.launchers.cli_args import (
+        make_arg_parser,
+        validate_parsed_serve_args,
+    )
+except ImportError:
+    from vllm.entrypoints.openai.cli_args import (
+        make_arg_parser,
+        validate_parsed_serve_args,
+    )
+
+try:
+    from vllm.entrypoints.serve.engine.protocol import ErrorResponse, OpenAIBaseModel
+except ImportError:
+    from vllm.entrypoints.openai.engine.protocol import ErrorResponse, OpenAIBaseModel
 
 # AReaL's own router for custom endpoints (replaces vLLM's removed global router)
 router = APIRouter()
@@ -424,6 +438,10 @@ if __name__ == "__main__":
     # This section should be in sync with vllm/entrypoints/cli/main.py for CLI
     # entrypoints.
     import vllm.entrypoints.openai.api_server as _api_server_module
+    try:
+        import vllm.entrypoints.launchers.api_server.entry as _launcher_entry
+    except ImportError:
+        _launcher_entry = None
 
     # Generation routes AReaL replaces with pause-aware wrappers. Every route
     # that reaches the engine must wait on the pause event, or a weight update
@@ -458,6 +476,8 @@ if __name__ == "__main__":
 
     # Patch build_app so run_server uses our version
     _api_server_module.build_app = _areal_build_app
+    if _launcher_entry is not None:
+        _launcher_entry.build_app = _areal_build_app
 
     cli_env_setup()
     parser = FlexibleArgumentParser(
@@ -465,6 +485,9 @@ if __name__ == "__main__":
     )
     parser = make_arg_parser(parser)
     args = parser.parse_args()
+    if hasattr(args, "enable_scale_out"):
+        # vLLM 0.30 makes /inference/v1/generate opt-in.
+        args.enable_scale_out = True
     validate_parsed_serve_args(args)
 
     if getattr(args, "headless", False):

@@ -1,0 +1,19 @@
+# Prefer the declared vLLM-Ascend 0.30.0rc2 dependency set.
+torch-npu==2.10.0.post4
+triton-ascend==3.2.2
+memcache-hybrid==1.2.0
+memfabric-hybrid==1.2.0
+fastapi>=0.115,<0.124
+mcp>=2,<3
+
+# Preserve the old AReaL image's empirically exercised NumPy/data stack.
+# MindSpeed metadata says numpy<=1.26.0; numpy==1.26.4 is an explicit,
+# previously tested exception requested for this upgrade.
+numpy==1.26.4
+pyarrow==25.0.1
+datasets==5.0.1
+trackio==0.37.1
+# vLLM 0.30 requires >=1.31; 1.31.0 passed the datasets/trackio/client
+# import probe in a disposable container.
+huggingface-hub==1.31.0
+gradio-client==2.6.1

@@ -1,0 +1,11 @@
+diff --git a/awex/vllm_plugin.py b/awex/vllm_plugin.py
+--- a/awex/vllm_plugin.py
++++ b/awex/vllm_plugin.py
+@@ -31,6 +31,6 @@ logger = logging.getLogger(__name__)
+ # Newer vLLM moved OpenAIBaseModel and removed the shared module-level router.
+ # Try new paths first, fall back to legacy.
+ try:
+-    from vllm.entrypoints.openai.engine.protocol import OpenAIBaseModel
++    from vllm.entrypoints.serve.engine.protocol import OpenAIBaseModel
+ except ImportError:
+     from vllm.entrypoints.openai.protocol import OpenAIBaseModel
